@@ -24,6 +24,7 @@ from app.llm.model_protocols import (
     current_protocol_options,
     model_config_fingerprint,
     normalize_chat_protocol_options,
+    requires_api_key,
     resolve_api_protocol,
     validate_model_base_url,
 )
@@ -113,7 +114,7 @@ def create_model_config(
     ensure_tenant_admin(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
     protocol = resolve_api_protocol(request.api_protocol, request.provider)
-    if not request.api_key:
+    if requires_api_key(protocol) and not request.api_key:
         raise HTTPException(status_code=422, detail="MODEL_API_KEY_REQUIRED")
     validate_model_base_url(request.base_url)
     _validate_sampling(protocol, request.temperature, request.max_output_tokens)
@@ -165,6 +166,11 @@ def update_model_config(
         if (request.api_protocol is not None or request.provider is not None)
         else ModelApiProtocol(row.api_protocol)
     )
+    if requires_api_key(protocol):
+        current_api_key = decrypt_secret(row.api_key_encrypted)
+        requested_api_key = request.api_key or current_api_key
+        if not requested_api_key:
+            raise HTTPException(status_code=422, detail="MODEL_API_KEY_REQUIRED")
     target_temperature = request.temperature if request.temperature is not None else row.temperature
     target_tokens = (
         request.max_output_tokens

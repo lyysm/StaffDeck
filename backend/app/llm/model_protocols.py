@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from enum import StrEnum
 from typing import Any
-import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import HTTPException
@@ -22,6 +22,14 @@ LEGACY_OPENAI_PROVIDER = "openai_compatible"
 
 def available_model_protocols() -> list[str]:
     return [protocol.value for protocol in ModelApiProtocol]
+
+
+def requires_api_key(protocol: ModelApiProtocol) -> bool:
+    """Return whether the selected protocol has provider-level key auth."""
+    return protocol in {
+        ModelApiProtocol.ANTHROPIC_MESSAGES,
+        ModelApiProtocol.GEMINI_GENERATE_CONTENT,
+    }
 
 
 def resolve_api_protocol(api_protocol: str | None, provider: str | None) -> ModelApiProtocol:

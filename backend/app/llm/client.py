@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator, Mapping
 import copy
 import hashlib
 import json
 import math
 import re
+from collections.abc import Iterator, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from openai import OpenAI
 from anthropic import Anthropic
+from openai import OpenAI
 
 from app.config import get_settings
 from app.db.models import ModelConfig
-from app.llm.model_protocols import ModelApiProtocol
+from app.llm.model_protocols import ModelApiProtocol, requires_api_key
 from app.llm.output_policy import (
     operation_empty_response_retries,
     operation_output_tokens,
@@ -84,6 +84,26 @@ EMPTY_RESPONSE_MESSAGE = "Model returned an empty response"
 DEFAULT_MODEL_API_TIMEOUT_SECONDS = 600.0
 DEFAULT_INPUT_TOKEN_BUDGET = 32_000
 TURN_STAGE_MESSAGE_MARKER = "_agent_turn_message"
+_NO_AUTH_API_KEY = "__staffdeck_no_auth__"
+
+
+def _openai_client(api_key: str, base_url: str, timeout: float) -> OpenAI:
+    """Build an OpenAI SDK client while supporting unauthenticated compatible APIs.
+
+    The SDK requires credentials even when a local OpenAI-compatible server does not.
+    The sentinel only satisfies that client-side check; overriding Authorization with
+    an empty value ensures the sentinel is never sent as a provider token.
+    """
+    kwargs: dict[str, Any] = {
+        "api_key": api_key or _NO_AUTH_API_KEY,
+        "base_url": base_url,
+        "timeout": timeout,
+    }
+    if not api_key:
+        kwargs["default_headers"] = {"Authorization": ""}
+    return OpenAI(**kwargs)
+
+
 class _CurrentStageText(str):
     pass
 
@@ -97,7 +117,7 @@ class LLMClient:
         except ValueError as exc:
             raise LLMError("MODEL_PROTOCOL_UNSUPPORTED") from exc
         api_key = decrypt_secret(model_config.api_key_encrypted)
-        if not api_key:
+        if requires_api_key(protocol) and not api_key:
             raise LLMError("Model API key is not configured")
         self.timeout_seconds = (
             getattr(model_config, "timeout_seconds", None)
@@ -106,18 +126,10 @@ class LLMClient:
         )
         self.base_url = str(model_config.base_url or "")
         if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
-            self.client = OpenAI(
-                api_key=api_key,
-                base_url=self.base_url,
-                timeout=self.timeout_seconds,
-            )
+            self.client = _openai_client(api_key, self.base_url, self.timeout_seconds)
             self.driver = ChatCompletionsDriver(self.client)
         elif protocol is ModelApiProtocol.OPENAI_RESPONSES:
-            self.client = OpenAI(
-                api_key=api_key,
-                base_url=self.base_url,
-                timeout=self.timeout_seconds,
-            )
+            self.client = _openai_client(api_key, self.base_url, self.timeout_seconds)
             self.driver = OpenAIResponsesDriver(self.client)
         elif protocol is ModelApiProtocol.ANTHROPIC_MESSAGES:
             kwargs: dict[str, Any] = {

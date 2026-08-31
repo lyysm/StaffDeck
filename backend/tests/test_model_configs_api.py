@@ -86,6 +86,49 @@ def test_verified_create_is_atomic_and_activates_only_after_success(tmp_path, mo
         assert len(db.exec(select(ModelConfig)).all()) == 1
 
 
+def test_unauthenticated_openai_model_can_be_verified(tmp_path, monkeypatch) -> None:
+    _install_passing_verification_client(monkeypatch)
+    with _db(tmp_path) as db:
+        created = create_model_config(
+            ModelConfigCreateRequest(
+                tenant_id="tenant_a",
+                name="Local model",
+                api_protocol="openai_chat_completions",
+                model="local-model",
+                enabled=True,
+            ),
+            verify_before_save=True,
+            db=db,
+            current_user=_admin(),
+        )
+
+        assert created.trust_status == "verified"
+        assert created.enabled is True
+        assert created.is_default is True
+
+
+@pytest.mark.parametrize(
+    "api_protocol", ["anthropic_messages", "gemini_generate_content"]
+)
+def test_authenticated_protocol_still_requires_api_key(tmp_path, api_protocol) -> None:
+    with _db(tmp_path) as db:
+        with pytest.raises(HTTPException) as exc_info:
+            create_model_config(
+                ModelConfigCreateRequest(
+                    tenant_id="tenant_a",
+                    name="Missing key",
+                    api_protocol=api_protocol,
+                    model="model-a",
+                    enabled=False,
+                ),
+                db=db,
+                current_user=_admin(),
+            )
+
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.detail == "MODEL_API_KEY_REQUIRED"
+
+
 def test_failed_verified_create_does_not_leave_disabled_model(tmp_path, monkeypatch) -> None:
     class FailingClient:
         def __init__(self, _config) -> None:  # noqa: ANN001

@@ -566,9 +566,9 @@ generate_json(..., validator=None, cancellation=None) -> T | dict[str, Any]
 
 - `api_protocol` 必须是已实现枚举；
 - 所有新配置一律保存为 unverified、disabled、non-default，不能自动把租户第一条配置设为默认；
-- `model`、API Key 和 token 上限合法；
+- `model` 和 token 上限合法；需要供应商鉴权的协议必须提供 API Key，OpenAI 兼容协议允许为空；
 - Temperature 按协议校验：Chat Completions 保持现有 `0..2` 兼容范围，Anthropic Messages 使用 `0..1`；迁移不改写已有 Chat 值；
-- 新建时若 API Key 为空则拒绝；编辑时空 API Key 表示不修改；
+- 新建时 Anthropic/Gemini 的 API Key 为空则拒绝，OpenAI 兼容协议允许免鉴权；编辑时空 API Key 表示不修改；
 - 协议变化执行禁用、取消默认并使验证失效；协议参数按分区保留且不得跨协议读取；
 - 未知旧 `provider` 返回 422。
 

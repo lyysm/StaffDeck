@@ -2,14 +2,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.llm.client import LLMClient, LLMError, _thinking_mode_for_model
-from app.llm.protocol_drivers import ChatCompletionsDriver, ProtocolCallError
+from app.llm.client import _NO_AUTH_API_KEY, LLMClient, LLMError, _thinking_mode_for_model
 from app.llm.output_policy import (
     operation_empty_response_retries,
     operation_output_tokens,
 )
-from app.llm.stage_protocol import TURN_STAGE_MESSAGES_KEY, stage_payload
+from app.llm.protocol_drivers import ChatCompletionsDriver, ProtocolCallError
 from app.llm.schemas import ModelConfigCreateRequest
+from app.llm.stage_protocol import TURN_STAGE_MESSAGES_KEY, stage_payload
 from app.observability.spans import bind_span_sink, llm_operation
 
 
@@ -82,6 +82,60 @@ def test_llm_client_uses_600_second_timeout(monkeypatch):
         "do_sample": False,
     }
     assert client.thinking_mode == "disabled"
+
+
+def test_llm_client_allows_empty_key_for_openai_compatible_models(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "")
+    monkeypatch.setattr(
+        "app.llm.client.OpenAI",
+        lambda **kwargs: captured.update(kwargs) or _FakeOpenAIClient(),
+    )
+    monkeypatch.setattr(
+        "app.llm.client.get_settings",
+        lambda: type("Settings", (), {"model_api_timeout_seconds": 30.0})(),
+    )
+    config = type(
+        "ModelConfig",
+        (),
+        {
+            "api_key_encrypted": "encrypted",
+            "base_url": "http://localhost:6008/v1",
+            "model": "local-model",
+            "temperature": 0.2,
+            "max_output_tokens": 128,
+            "extra_body_json": {},
+        },
+    )()
+
+    client = LLMClient(config)
+
+    assert client.api_key == ""
+    assert captured["api_key"] == _NO_AUTH_API_KEY
+    assert captured["default_headers"] == {"Authorization": ""}
+
+
+@pytest.mark.parametrize(
+    "api_protocol", ["anthropic_messages", "gemini_generate_content"]
+)
+def test_llm_client_still_requires_key_for_authenticated_protocols(monkeypatch, api_protocol):
+    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "")
+    config = type(
+        "ModelConfig",
+        (),
+        {
+            "api_protocol": api_protocol,
+            "api_key_encrypted": "encrypted",
+            "base_url": "http://localhost:6008",
+            "model": "local-model",
+            "temperature": 0.2,
+            "max_output_tokens": 128,
+            "extra_body_json": {},
+        },
+    )()
+
+    with pytest.raises(LLMError, match="Model API key is not configured"):
+        LLMClient(config)
 
 
 def test_llm_client_preserves_custom_openai_base_url(monkeypatch) -> None:

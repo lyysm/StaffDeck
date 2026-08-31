@@ -8,11 +8,11 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.db.models import ModelConfig
+from app.llm.client import _normalize_extra_body
 from app.llm.model_config_resolver import (
     resolve_model_config_for_runtime,
     resolve_model_config_for_verification,
 )
-from app.llm.client import _normalize_extra_body
 from app.llm.model_protocols import (
     ModelApiProtocol,
     available_model_protocols,
@@ -20,6 +20,7 @@ from app.llm.model_protocols import (
     normalize_chat_protocol_options,
     resolve_api_protocol,
 )
+from app.llm.protocol_drivers import _protocol_call_error
 
 
 def _session() -> Session:
@@ -159,6 +160,15 @@ def test_all_implemented_protocols_are_available() -> None:
         "anthropic_messages",
         "gemini_generate_content",
     ]
+
+
+def test_openai_connection_error_is_classified_as_timeout() -> None:
+    api_connection_error = type("APIConnectionError", (Exception,), {})
+
+    error = _protocol_call_error(api_connection_error("Connection error."))
+
+    assert error.code == "MODEL_TIMEOUT"
+    assert error.retryable is True
 
 
 def test_snapshot_model_config_preserves_anthropic_protocol_and_options() -> None:
