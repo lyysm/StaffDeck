@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.channels.wecom_config import effective_wecom_ws_proxy_mode
 from app.db.models import ChannelBinding, ChannelDelivery, Team, User
 
 
@@ -62,6 +63,7 @@ class ChannelBindingRead(BaseModel):
     baseurl: Optional[str] = None
     bot_id: Optional[str] = None
     corp_id: Optional[str] = None
+    wecom_ws_proxy_mode: Optional[Literal["direct", "system"]] = None
     app_id: Optional[str] = None
     client_id: Optional[str] = None
     bot_open_id: Optional[str] = None
@@ -132,6 +134,11 @@ class WeComCredentialsRequest(BaseModel):
     secret: str
     # 企业 ID 是企微 userid 的真实唯一边界,首次激活即必须提供
     corp_id: str
+
+
+class WeComProxyModeRequest(BaseModel):
+    tenant_id: str
+    mode: Literal["direct", "system"]
 
 
 class FeishuCredentialsRequest(BaseModel):
@@ -329,6 +336,9 @@ def channel_binding_read(
         baseurl=config.get("baseurl"),
         bot_id=config.get("bot_id"),
         corp_id=config.get("corp_id"),
+        wecom_ws_proxy_mode=(
+            effective_wecom_ws_proxy_mode(config) if binding.channel == "wecom" else None
+        ),
         app_id=config.get("app_id"),
         client_id=config.get("client_id"),
         bot_open_id=config.get("bot_open_id"),

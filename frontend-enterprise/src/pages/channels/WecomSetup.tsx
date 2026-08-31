@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { notify } from '@/components/ui/app-toast';
 
-import { Input } from '@/components/ui';
+import { Input, Switch } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
 
 import { api, TENANT_ID } from '../../api/client';
@@ -18,6 +18,40 @@ const DEFAULT_FIELDS: ChannelCredentialFieldRead[] = [
   { key: 'secret', label: '机器人 Secret', secret: true },
   { key: 'corp_id', label: '企业 ID' },
 ];
+
+type WecomWsProxyMode = 'direct' | 'system';
+
+function ProxyModeControl({
+  mode,
+  saving,
+  onChange,
+}: {
+  mode: WecomWsProxyMode;
+  saving: boolean;
+  onChange: (nextMode: WecomWsProxyMode) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-[12px] border-t border-[#edf0f5] pt-[12px]">
+      <div className="min-w-0">
+        <div className="text-[13px] font-medium text-[#18181a]">企微 WebSocket 网络代理</div>
+        <div className="mt-[3px] text-[12px] leading-[1.6] text-[#858b9c]">
+          关闭时直连企微服务器；开启后使用当前设备的系统代理。
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-[8px]">
+        <span className="text-[12px] font-medium text-[#667085]">
+          {mode === 'system' ? '系统代理' : '直连'}
+        </span>
+        <Switch
+          aria-label="使用系统代理连接企业微信"
+          checked={mode === 'system'}
+          disabled={saving}
+          onCheckedChange={(checked) => onChange(checked ? 'system' : 'direct')}
+        />
+      </div>
+    </div>
+  );
+}
 
 export default function WecomSetup({
   binding,
@@ -39,6 +73,14 @@ export default function WecomSetup({
   const [editing, setEditing] = useState(!configuredBotId);
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const configuredProxyMode: WecomWsProxyMode =
+    binding.wecom_ws_proxy_mode === 'system' ? 'system' : 'direct';
+  const [proxyMode, setProxyMode] = useState<WecomWsProxyMode>(configuredProxyMode);
+  const [proxySaving, setProxySaving] = useState(false);
+
+  useEffect(() => {
+    setProxyMode(configuredProxyMode);
+  }, [binding.id, configuredProxyMode]);
 
   async function save() {
     const incomplete = fields.some(
@@ -70,30 +112,54 @@ export default function WecomSetup({
     }
   }
 
+  async function saveProxyMode(nextMode: WecomWsProxyMode) {
+    if (proxySaving || nextMode === proxyMode) return;
+    const previousMode = proxyMode;
+    setProxyMode(nextMode);
+    setProxySaving(true);
+    try {
+      const updated = await api.put<ChannelBindingRead>(
+        `/api/enterprise/channels/${binding.id}/wecom/proxy-mode`,
+        { tenant_id: TENANT_ID, mode: nextMode },
+      );
+      setProxyMode(updated.wecom_ws_proxy_mode === 'system' ? 'system' : 'direct');
+      onChanged(updated);
+      notify.success('网络代理设置已保存，企微连接正在重启');
+    } catch (error) {
+      setProxyMode(previousMode);
+      notify.error(error instanceof Error ? error.message : '保存网络代理设置失败');
+    } finally {
+      setProxySaving(false);
+    }
+  }
+
   if (configuredBotId && !editing) {
     return (
-      <div className="flex flex-wrap items-center gap-[10px] rounded-[10px] bg-[#fafbfc] p-[16px]">
-        <span className="text-[12px] text-[#464c5e]">凭证已配置</span>
-        <span className="text-[12px] text-[#858b9c]">bot_id：{configuredBotId}</span>
-        {configuredCorpId && (
-          <span className="text-[12px] text-[#858b9c]">{`企业 ID：${configuredCorpId}`}</span>
-        )}
-        <StatusBadge tone={binding.connected ? 'green' : 'gray'}>
-          {binding.connected ? '已连接' : '未连接'}
-        </StatusBadge>
-        <UIButton
-          variant="outline"
-          onClick={() => {
-            setValues({
-              bot_id: configuredBotId,
-              ...(configuredCorpId ? { corp_id: configuredCorpId } : {}),
-            });
-            setEditing(true);
-          }}
-          className={OUTLINE_BUTTON_CLASS}
-        >
-          重新配置
-        </UIButton>
+      <div className="flex flex-col gap-[12px] rounded-[10px] bg-[#fafbfc] p-[16px]">
+        <div className="flex flex-wrap items-center gap-[10px]">
+          <span className="text-[12px] text-[#464c5e]">凭证已配置</span>
+          <span className="text-[12px] text-[#858b9c]">bot_id：{configuredBotId}</span>
+          {configuredCorpId && (
+            <span className="text-[12px] text-[#858b9c]">{`企业 ID：${configuredCorpId}`}</span>
+          )}
+          <StatusBadge tone={binding.connected ? 'green' : 'gray'}>
+            {binding.connected ? '已连接' : '未连接'}
+          </StatusBadge>
+          <UIButton
+            variant="outline"
+            onClick={() => {
+              setValues({
+                bot_id: configuredBotId,
+                ...(configuredCorpId ? { corp_id: configuredCorpId } : {}),
+              });
+              setEditing(true);
+            }}
+            className={OUTLINE_BUTTON_CLASS}
+          >
+            重新配置
+          </UIButton>
+        </div>
+        <ProxyModeControl mode={proxyMode} saving={proxySaving} onChange={saveProxyMode} />
       </div>
     );
   }
@@ -123,6 +189,7 @@ export default function WecomSetup({
           )}
         </label>
       ))}
+      <ProxyModeControl mode={proxyMode} saving={proxySaving} onChange={saveProxyMode} />
       <div className="flex justify-end gap-[8px]">
         {configuredBotId && (
           <UIButton

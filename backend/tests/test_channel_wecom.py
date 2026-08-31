@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 import time
 from datetime import timedelta
@@ -610,6 +611,49 @@ def test_send_raises_when_stream_not_ready(monkeypatch) -> None:
 # ---------- StreamManager 生命周期 ----------
 
 
+def test_wecom_ws_network_scope_selects_direct_proxy_per_context(monkeypatch) -> None:
+    import app.channels.adapters.wecom as wecom_module
+    import websockets
+
+    monkeypatch.setenv("NO_PROXY", "localhost")
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.delenv(wecom_module.WECOM_WS_PROXY_MODE_ENV, raising=False)
+
+    with wecom_module._wecom_ws_network_scope("direct"):
+        direct_connection = websockets.connect("wss://example.com")
+        assert vars(direct_connection)["proxy"] is None
+
+    assert os.environ["NO_PROXY"] == "localhost"
+    assert "no_proxy" not in os.environ
+
+
+def test_wecom_ws_network_scope_can_keep_system_proxy(monkeypatch) -> None:
+    import app.channels.adapters.wecom as wecom_module
+    import websockets
+
+    monkeypatch.setenv("NO_PROXY", "localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    monkeypatch.setenv(wecom_module.WECOM_WS_PROXY_MODE_ENV, "system")
+
+    with wecom_module._wecom_ws_network_scope():
+        system_connection = websockets.connect("wss://example.com")
+        assert vars(system_connection)["proxy"] is True
+        assert os.environ["NO_PROXY"] == "localhost"
+        assert os.environ["no_proxy"] == "127.0.0.1"
+
+
+def test_wecom_binding_proxy_mode_overrides_process_default(monkeypatch) -> None:
+    import app.channels.adapters.wecom as wecom_module
+    import websockets
+
+    monkeypatch.setenv(wecom_module.WECOM_WS_PROXY_MODE_ENV, "system")
+    with wecom_module._wecom_ws_network_scope(
+        wecom_module._wecom_ws_proxy_mode({"wecom_ws_proxy_mode": "direct"})
+    ):
+        direct_connection = websockets.connect("wss://example.com")
+        assert vars(direct_connection)["proxy"] is None
+
+
 class FakeWSClient:
     def __init__(self):
         self.handlers: dict = {}
@@ -1189,6 +1233,67 @@ def test_wecom_credentials_endpoint(monkeypatch) -> None:
         assert decrypt_channel_secret(binding.credentials_enc) == "bot_secret"
         assert binding.config_json["bot_id"] == "aib_bot1"
         assert binding.config_json["corp_id"] == "corpA"
+
+
+def test_wecom_proxy_mode_endpoint_persists_and_returns_mode(monkeypatch) -> None:
+    import app.api.channels as channels_api
+
+    engine = _test_engine()
+    users = _seed_api_users(engine)
+    binding_id = _seed_wecom_binding(engine, config_json={"bot_id": "aib_bot1"})
+    client = _make_api_client(engine)
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: False)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}/wecom/proxy-mode",
+        json={"tenant_id": "tenant_demo", "mode": "system"},
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["wecom_ws_proxy_mode"] == "system"
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        assert binding.config_json["wecom_ws_proxy_mode"] == "system"
+        assert binding.config_revision == 1
+        assert binding.connected is False
+
+
+def test_wecom_proxy_mode_endpoint_restarts_active_stream(monkeypatch) -> None:
+    import app.api.channels as channels_api
+    import app.channels
+
+    engine = _test_engine()
+    users = _seed_api_users(engine)
+    binding_id = _seed_wecom_binding(engine, config_json={"bot_id": "aib_bot1"})
+    calls: list[str] = []
+
+    class SpyManager:
+        def pause_binding(self, bid):
+            calls.append(f"pause:{bid}")
+
+        def wait_binding_stopped(self, bid, timeout_seconds=5.0):
+            calls.append(f"wait:{bid}")
+            return True
+
+        def resume_binding(self, bid, *, start=True):
+            calls.append(f"resume:{bid}:{start}")
+
+    monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: SpyManager())
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: True)
+
+    response = _make_api_client(engine).put(
+        f"/api/enterprise/channels/{binding_id}/wecom/proxy-mode",
+        json={"tenant_id": "tenant_demo", "mode": "system"},
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 200
+    assert calls == [
+        f"pause:{binding_id}",
+        f"wait:{binding_id}",
+        f"resume:{binding_id}:True",
+    ]
 
 
 def test_wecom_credentials_rejects_wechat_binding() -> None:

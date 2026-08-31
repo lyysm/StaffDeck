@@ -55,6 +55,7 @@ from app.channels.schema import (
     FeishuCredentialsRequest,
     MyIdentityBindingRead,
     WeComCredentialsRequest,
+    WeComProxyModeRequest,
     channel_binding_agents_read,
     channel_binding_read,
     channel_delivery_read,
@@ -71,6 +72,7 @@ from app.channels.service_session import (
     adopt_orphan_channel_sessions,
     migrate_binding_session_account_key,
 )
+from app.channels.wecom_config import WECOM_WS_PROXY_MODE_CONFIG_KEY
 from app.config import get_settings
 from app.db import get_session
 from app.db.models import (
@@ -1247,7 +1249,9 @@ def save_wecom_credentials(
     """保存企微智能机器人凭证(bot_id + secret),激活绑定并拉起长连接。"""
     ensure_current_user_tenant(request.tenant_id, current_user)
     binding = _get_binding(db, request.tenant_id, binding_id)
-    _ensure_binding_manager(db, request.tenant_id, binding, current_user, action=_MANAGER_ACTION_CREDENTIALS)
+    _ensure_binding_manager(
+        db, request.tenant_id, binding, current_user, action=_MANAGER_ACTION_CREDENTIALS
+    )
     if binding.channel != "wecom":
         raise HTTPException(status_code=400, detail="该绑定不是企业微信渠道")
     bot_id = request.bot_id.strip()
@@ -1337,6 +1341,52 @@ def save_wecom_credentials(
             _resume_binding(channel, binding_id, start=should_run)
             raise
         _resume_binding(channel, binding_id, start=True)
+    return channel_binding_read(db, binding, current_user)
+
+
+@router.put("/{binding_id}/wecom/proxy-mode", response_model=ChannelBindingRead)
+def update_wecom_proxy_mode(
+    binding_id: str,
+    request: WeComProxyModeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> ChannelBindingRead:
+    """保存企微 WebSocket 代理模式,并按需重启当前绑定的长连接。"""
+    ensure_current_user_tenant(request.tenant_id, current_user)
+    binding = _get_binding(db, request.tenant_id, binding_id)
+    _ensure_binding_manager(
+        db, request.tenant_id, binding, current_user, action=_MANAGER_ACTION_CREDENTIALS
+    )
+    if binding.channel != "wecom":
+        raise HTTPException(status_code=400, detail="该绑定不是企业微信渠道")
+
+    db.rollback()
+    with binding_lifecycle_lock(binding_id):
+        binding = _get_binding(db, request.tenant_id, binding_id)
+        expected_revision = binding.config_revision
+        channel = binding.channel
+        should_run = bool(binding.status == "active" and binding.credentials_enc)
+        if (binding.config_json or {}).get(WECOM_WS_PROXY_MODE_CONFIG_KEY) == request.mode:
+            return channel_binding_read(db, binding, current_user)
+        db.rollback()
+        _quiesce_binding_or_409(channel, binding_id, should_run=should_run)
+        try:
+            binding = _get_binding(db, request.tenant_id, binding_id)
+            _ensure_revision(binding, expected_revision)
+            config = dict(binding.config_json or {})
+            config[WECOM_WS_PROXY_MODE_CONFIG_KEY] = request.mode
+            binding.config_json = config
+            binding.config_revision += 1
+            binding.connected = False
+            binding.updated_at = utc_now()
+            db.add(binding)
+            db.commit()
+            db.refresh(binding)
+        except Exception:
+            db.rollback()
+            _resume_binding(channel, binding_id, start=should_run)
+            raise
+        _resume_binding(channel, binding_id, start=should_run)
     return channel_binding_read(db, binding, current_user)
 
 

@@ -8,6 +8,8 @@ import re
 import threading
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import timedelta
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -29,8 +31,15 @@ from app.channels.media import (
     MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES,
     ensure_channel_media_size,
 )
+from app.channels.wecom_config import WECOM_WS_HOST as _WECOM_WS_HOST
+from app.channels.wecom_config import WECOM_WS_PROXY_MODE_ENV as _WECOM_WS_PROXY_MODE_ENV
+from app.channels.wecom_config import effective_wecom_ws_proxy_mode
 from app.db import engine
 from app.db.models import ChannelBinding, utc_now
+
+# 保留旧模块级导出,便于已有诊断脚本读取该环境变量名。
+WECOM_WS_HOST = _WECOM_WS_HOST
+WECOM_WS_PROXY_MODE_ENV = _WECOM_WS_PROXY_MODE_ENV
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +50,57 @@ WECOM_DISCONNECT_ALERT_MINUTES = 15
 WECOM_API_BASE = "https://qyapi.weixin.qq.com/cgi-bin"
 WECOM_TOKEN_REFRESH_SKEW_SECONDS = 300
 WECOM_MEDIA_HOSTS = {"ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com"}
+
+_wecom_ws_proxy_mode_context: ContextVar[str | None] = ContextVar(
+    "staffdeck_wecom_ws_proxy_mode", default=None
+)
+_wecom_ws_proxy_hook_lock = threading.Lock()
+_wecom_ws_proxy_hook_installed = False
+
+
+def _wecom_ws_proxy_mode(config: dict[str, object] | None = None) -> str:
+    return effective_wecom_ws_proxy_mode(config)
+
+
+def _install_wecom_ws_proxy_hook() -> None:
+    """让 SDK 1.0.2 的 websockets.connect 支持按当前 stream 选择 proxy。"""
+    global _wecom_ws_proxy_hook_installed
+    if _wecom_ws_proxy_hook_installed:
+        return
+
+    import websockets
+
+    with _wecom_ws_proxy_hook_lock:
+        if _wecom_ws_proxy_hook_installed:
+            return
+        connect_class = websockets.connect
+        if getattr(connect_class, "_staffdeck_proxy_hook", False):
+            _wecom_ws_proxy_hook_installed = True
+            return
+
+        class ScopedConnect(connect_class):
+            _staffdeck_proxy_hook = True
+
+            def __init__(self, *args: Any, **kwargs: Any):
+                if _wecom_ws_proxy_mode_context.get() == "direct" and "proxy" not in kwargs:
+                    kwargs["proxy"] = None
+                super().__init__(*args, **kwargs)
+
+        ScopedConnect.__name__ = getattr(connect_class, "__name__", "connect")
+        ScopedConnect.__qualname__ = ScopedConnect.__name__
+        websockets.connect = ScopedConnect
+        _wecom_ws_proxy_hook_installed = True
+
+
+@contextmanager
+def _wecom_ws_network_scope(proxy_mode: str | None = None):
+    """在当前企微 stream 的 asyncio 上下文中选择直连或系统代理。"""
+    _install_wecom_ws_proxy_hook()
+    token = _wecom_ws_proxy_mode_context.set(proxy_mode or _wecom_ws_proxy_mode())
+    try:
+        yield
+    finally:
+        _wecom_ws_proxy_mode_context.reset(token)
 
 
 def validate_wecom_media_url(url: str) -> bool:
@@ -697,6 +757,7 @@ class WeComStreamManager:
                     return
                 config = dict(binding.config_json or {})
                 bot_id = str(config.get("bot_id") or "")
+                proxy_mode = _wecom_ws_proxy_mode(config)
                 secret = (
                     decrypt_channel_secret(binding.credentials_enc) if binding.credentials_enc else ""
                 )
@@ -713,8 +774,10 @@ class WeComStreamManager:
             state.client = client
             if state.stop.is_set() or self._stopped.is_set():
                 return
-            loop.run_until_complete(client.connect())
-            loop.run_forever()
+            # SDK 1.0.2 内部调用 websockets.connect(proxy=True),作用域需覆盖其自动重连。
+            with _wecom_ws_network_scope(proxy_mode):
+                loop.run_until_complete(client.connect())
+                loop.run_forever()
         except Exception:
             logger.exception("企微 stream 线程异常 binding=%s", binding_id)
         finally:

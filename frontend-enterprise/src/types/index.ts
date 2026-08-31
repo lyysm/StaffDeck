@@ -924,6 +924,7 @@ export type ChannelBindingRead = {
   baseurl?: string | null;
   bot_id?: string | null;
   corp_id?: string | null;
+  wecom_ws_proxy_mode?: 'direct' | 'system' | null;
   app_id?: string | null;
   client_id?: string | null;
   bot_open_id?: string | null;
