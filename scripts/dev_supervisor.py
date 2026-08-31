@@ -27,7 +27,7 @@ def env_value(name: str, default: str) -> str:
 
 SINGLE_PORT = env_value("SINGLE_PORT", "1") != "0"
 APP_HOST = env_value("APP_HOST", "127.0.0.1")
-APP_PORT = env_value("APP_PORT", "5173")
+APP_PORT = env_value("APP_PORT", "7173")
 BACKEND_HOST = env_value("BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = env_value("BACKEND_PORT", "8000")
 ENTERPRISE_HOST = env_value("ENTERPRISE_HOST", "127.0.0.1")
