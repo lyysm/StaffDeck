@@ -925,6 +925,8 @@ export type ChannelBindingRead = {
   bot_id?: string | null;
   corp_id?: string | null;
   wecom_ws_proxy_mode?: 'direct' | 'system' | null;
+  open_kfid?: string | null;
+  callback_ready?: boolean;
   app_id?: string | null;
   client_id?: string | null;
   bot_open_id?: string | null;
@@ -937,6 +939,7 @@ export type ChannelBindingRead = {
   created_by_name?: string | null;
   config_json?: Record<string, unknown>;
   agents: ChannelBindingAgentRead[];
+  wechat_kf_accounts?: WeChatKfAccountRead[];
   /** 团队绑定（与 agent 挂载互斥，后端逐步放开，可能缺省）。 */
   team_id?: string | null;
   team_name?: string | null;
@@ -951,6 +954,16 @@ export type ChannelBindingRead = {
   my_role?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type WeChatKfAccountRead = {
+  open_kfid: string;
+  name: string;
+  agent_id?: string | null;
+  team_id?: string | null;
+  status: string;
+  sync_cursor: string;
+  last_error?: string | null;
 };
 
 export type ChannelBindingManagerRead = {
